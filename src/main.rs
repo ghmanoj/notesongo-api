@@ -1,8 +1,10 @@
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, header},
+    middleware::{self, Next},
+    response::Response,
     routing::post,
 };
 use chrono::Utc;
@@ -63,7 +65,24 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/utilities_local", post(handle))
         .layer(DefaultBodyLimit::max(100 * 1024))
+        .layer(middleware::from_fn(log_request))
         .with_state(state)
+}
+
+async fn log_request(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    tracing::info!(
+        target: "notesongo_api::requests",
+        method = %method,
+        path = ?path,
+        status = response.status().as_u16(),
+        duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "API request completed"
+    );
+    response
 }
 
 async fn handle(

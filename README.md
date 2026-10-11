@@ -26,6 +26,23 @@ environment variables.
 | `BROWSER_PATH` | browser chosen by ChromeDriver | Chrome/Chromium/Brave executable |
 | `RUST_LOG` | `info` | Logging filter |
 
+## Request logging
+
+Every completed HTTP request is logged to stdout at `info` level with a timestamp,
+method, path, HTTP status, and duration in milliseconds. This includes invalid
+requests, missing routes, unsupported methods, and oversized bodies. Request
+bodies, headers, query strings, and response bodies are excluded.
+
+The HTTP status is separate from the API's JSON `status` field: command failures
+can still return HTTP 200 for compatibility with NotesOnGo.
+
+Use `RUST_LOG` to control verbosity. For example, keep other logs at `info` but
+disable request logs:
+
+```sh
+RUST_LOG=info,notesongo_api::requests=off ./target/release/notesongo-api
+```
+
 ## Mailbox browser setup
 
 Install ChromeDriver compatible with your Chrome/Chromium/Brave version and
