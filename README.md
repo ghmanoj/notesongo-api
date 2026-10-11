@@ -52,6 +52,19 @@ start it separately:
 chromedriver --port=9515
 ```
 
+Leave ChromeDriver running in its own terminal while the backend runs in another.
+Check that it is reachable from the machine running the backend:
+
+```sh
+curl --fail http://127.0.0.1:9515/status
+```
+
+If this cannot connect, start ChromeDriver and confirm that `WEBDRIVER_URL` uses
+the same host and port. If the driver is reachable but cannot create a session,
+check its terminal output, browser/driver version compatibility, and `BROWSER_PATH`.
+Restart the backend after editing `.env`. Failed mailbox requests are cached for
+30 seconds; wait before retrying, or restart to clear that cache.
+
 For Brave on macOS, set:
 
 ```dotenv

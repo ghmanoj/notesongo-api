@@ -204,6 +204,34 @@ async fn fetch_mailbox(user: &str, password: &str) -> Result<Vec<String>, &'stat
     .await
 }
 
+fn browser_connection_error(error: fantoccini::error::NewSessionError) -> &'static str {
+    use fantoccini::error::NewSessionError;
+    // Keep driver response bodies and URLs out of logs; they may contain secrets.
+    match error {
+        NewSessionError::BadWebdriverUrl(_) => "Invalid WEBDRIVER_URL; use http://127.0.0.1:9515",
+        NewSessionError::Failed(_) | NewSessionError::FailedC(_) | NewSessionError::Lost(_) => {
+            "Cannot reach ChromeDriver; start chromedriver --port=9515 and check WEBDRIVER_URL"
+        }
+        NewSessionError::SessionNotCreated(error)
+            if error
+                .message
+                .to_ascii_lowercase()
+                .contains("cannot find chrome binary") =>
+        {
+            "ChromeDriver cannot find Chrome; install Chrome or set BROWSER_PATH to your Chrome/Chromium/Brave executable"
+        }
+        NewSessionError::SessionNotCreated(_) => {
+            "ChromeDriver could not launch the browser; check BROWSER_PATH, browser/driver version compatibility, and ChromeDriver output"
+        }
+        NewSessionError::NotW3C(_) => {
+            "WEBDRIVER_URL did not return a WebDriver response; point it at ChromeDriver, not the API server"
+        }
+        NewSessionError::UnexpectedError(_) => {
+            "ChromeDriver rejected browser setup; check ChromeDriver output"
+        }
+    }
+}
+
 async fn fetch_mailbox_from(
     webdriver: &str,
     browser: Option<&str>,
@@ -224,7 +252,7 @@ async fn fetch_mailbox_from(
             .capabilities(capabilities)
             .connect(webdriver)
             .await
-            .map_err(|_| "Browser connection failed")
+            .map_err(browser_connection_error)
     })
     .await
     .map_err(|_| "Browser connection timed out")??;
