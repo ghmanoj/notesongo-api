@@ -1,87 +1,38 @@
 # notesongo-api
 
-Rust backend for NotesOnGo, using Axum and Tokio. The iOS app needs no changes:
-the default address is `0.0.0.0:8081`, the endpoint is `POST /utilities_local`,
-and responses contain `type` (string), `message` (string), and `status` (boolean).
+Zig backend for NotesOnGo. The iOS app needs no changes: the default address is
+`0.0.0.0:8081`, the endpoint is `POST /utilities_local`, and responses contain
+`type` (string), `message` (string), and `status` (boolean).
 
 ## Run
 
-Install stable Rust, then run from this directory:
+Use **Zig 0.17.0**, then run from this directory:
 
 ```sh
 cp .env.example .env
-cargo build --release --locked
-./target/release/notesongo-api
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/notesongo-api
 ```
 
-USPS credentials are only required for mailbox requests. Other commands work
-without them. Configuration is loaded from `.env` without overriding existing
-environment variables.
+For development, use `zig build run`. There are no third-party Zig packages.
+The executable links libc and currently supports macOS and Linux. ChromeDriver
+is needed only for mailbox requests. Python 3 is needed only for the verification
+and benchmark scripts. Rust, Cargo, Node.js, and Puppeteer are not required.
+
+Configuration is loaded from `.env` without overriding existing environment
+variables. Basic `KEY=value`, quoted values, `export`, and comment lines are
+supported; shell interpolation and multiline values are not supported.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BIND_ADDR` | `0.0.0.0:8081` | Listen address |
+| `BIND_ADDR` | `0.0.0.0:8081` | IPv4 address:port or [IPv6 address]:port |
 | `USPS_USR` / `USPS_PW` | unset | USPS login credentials |
 | `WEBDRIVER_URL` | `http://127.0.0.1:9515` | Running ChromeDriver service |
 | `BROWSER_PATH` | browser chosen by ChromeDriver | Chrome/Chromium/Brave executable |
-| `RUST_LOG` | `info` | Logging filter |
+| `LOG_LEVEL` | `info` | `off`, `error`, `warn`, `info`, or `debug` |
 
-## Request logging
-
-Every completed HTTP request is logged to stdout at `info` level with a timestamp,
-method, path, HTTP status, and duration in milliseconds. This includes invalid
-requests, missing routes, unsupported methods, and oversized bodies. Request
-bodies, headers, query strings, and response bodies are excluded.
-
-The HTTP status is separate from the API's JSON `status` field: command failures
-can still return HTTP 200 for compatibility with NotesOnGo.
-
-Use `RUST_LOG` to control verbosity. For example, keep other logs at `info` but
-disable request logs:
-
-```sh
-RUST_LOG=info,notesongo_api::requests=off ./target/release/notesongo-api
-```
-
-## Mailbox browser setup
-
-Install ChromeDriver compatible with your Chrome/Chromium/Brave version and
-start it separately:
-
-```sh
-chromedriver --port=9515
-```
-
-Leave ChromeDriver running in its own terminal while the backend runs in another.
-Check that it is reachable from the machine running the backend:
-
-```sh
-curl --fail http://127.0.0.1:9515/status
-```
-
-If this cannot connect, start ChromeDriver and confirm that `WEBDRIVER_URL` uses
-the same host and port. If the driver is reachable but cannot create a session,
-check its terminal output, browser/driver version compatibility, and `BROWSER_PATH`.
-Restart the backend after editing `.env`. Failed mailbox requests are cached for
-30 seconds; wait before retrying, or restart to clear that cache.
-
-For Brave on macOS, set:
-
-```dotenv
-BROWSER_PATH="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
-```
-
-The server creates a headless browser session through WebDriver, logs into USPS,
-reads `#cp_week li`, and attempts to close the session on success, failure, or
-timeout. Node.js and Puppeteer are no longer needed. USPS login changes,
-CAPTCHA, or MFA may prevent automated access.
-
-Successful mailbox responses are cached until the UTC date changes, matching
-the old backend's day boundary. Concurrent callers share a single fetch.
-Failures are cached for 30 seconds to prevent repeated browser launches.
-Browser connection, scraping, and cleanup have separate 20/90/10 second limits.
-An unresponsive driver can leave an orphaned session; supervise the driver in
-deployment. USPS selectors and real login must be verified with your account.
+`RUST_LOG` is accepted as a legacy fallback when `LOG_LEVEL` is unset.
+`notesongo_api::requests=off` in the legacy value disables request logs.
 
 ## API
 
@@ -93,7 +44,8 @@ curl http://localhost:8081/utilities_local \
 
 JSON and URL-encoded forms accept exactly two string fields: `command` and
 `modifier`. Invalid requests return the existing `Unknown` error envelope with
-HTTP 200; bodies larger than 100 KiB return HTTP 413.
+HTTP 200; bodies larger than 100 KiB return HTTP 413. Unknown routes return 404,
+and unsupported methods return 405. Persistent HTTP connections are supported.
 
 | Command | Modifier | Response type / behavior |
 | --- | --- | --- |
@@ -105,36 +57,72 @@ HTTP 200; bodies larger than 100 KiB return HTTP 413.
 
 Logout and lock preserve the original Windows command mapping. On macOS/Linux,
 `shutdown /l` generally fails. Commands run without a shell, with a 10 second
-timeout. Child processes are killed if the operation is cancelled. The service
-retains the original unauthenticated API; deploy on a trusted private network.
+limit and bounded output. Timed-out or cancelled child processes are killed.
+Command failures keep HTTP 200 and set the JSON `status` to false. Operating-system
+error messages can differ from the former Rust backend.
 
-Intentional bug fixes: zero/one mail counts now return `No Mails` / `You have 1
-mail`, and help returns a valid response instead of attempting to execute an
-object. Missing USPS credentials no longer prevent server startup.
+Connections run concurrently; mailbox callers share a mutex while help and
+process commands remain responsive. SIGINT and SIGTERM stop acceptance, cancel
+active work, kill command children, and attempt browser session cleanup.
+
+Completed requests are logged to stdout with a Unix timestamp, method, escaped path,
+HTTP status, and duration in milliseconds. Bodies, headers, query strings,
+and response data are excluded. The service retains its unauthenticated API;
+deploy on a trusted private network.
+
+## Mailbox browser setup
+
+Install ChromeDriver compatible with your Chrome/Chromium/Brave version and
+start it separately:
+
+```sh
+chromedriver --port=9515
+curl --fail http://127.0.0.1:9515/status
+```
+
+For Brave on macOS, set:
+
+```dotenv
+BROWSER_PATH="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+```
+
+The Zig client speaks the W3C WebDriver protocol directly. It creates a headless
+browser session, logs into USPS, reads `#cp_week li`, and attempts to close the
+session on success, failure, timeout, and shutdown. Connection, scraping, and
+cleanup have separate 20/90/10 second limits. An unresponsive driver can leave an
+orphaned session; supervise the driver in deployment.
+
+Successful results are cached until the UTC date changes. Failures are cached
+for 30 seconds, and concurrent callers share one fetch. Missing credentials
+return `Something is not right` without preventing startup. Zero and one mail
+return `No Mails` and `You have 1 mail` respectively.
+
+Restart after changing `.env`. If the driver is unreachable, check its host and
+port. If it cannot create a session, check browser/driver version compatibility,
+`BROWSER_PATH`, and ChromeDriver's terminal output. The API logs only safe error
+names rather than driver response bodies. USPS login changes, CAPTCHA, or MFA
+may prevent automated access. Real USPS login must be verified with your account.
 
 ## Verify and measure
 
 ```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+zig fmt --check build.zig src/main.zig
+zig build test
+zig build -Doptimize=ReleaseFast
+python3 scripts/integration_test.py
 python3 scripts/benchmark.py --requests 10000 --concurrency 32
 ```
 
-Run the benchmark against the release binary. It measures the inexpensive help
-route using persistent HTTP connections and checks every response. Reported
-latency and throughput depend on the host and load generator. Compare the same
-workload on the same machine when evaluating changes; there is no measured
-Node.js baseline in this repository. Asynchronous execution keeps browser and
-process waits from blocking other routes; it cannot speed up USPS navigation or
-the host's external commands.
+The integration script starts isolated API processes and a mock ChromeDriver.
+It verifies request validation, routing, size limits, persistent connections,
+concurrency, mailbox caching, browser cleanup on success/failure, secret-free
+logs, and shutdown during an active fetch. It does not contact USPS or execute
+logout/shutdown commands on your host.
 
-Local release validation on October 11, 2026 (macOS arm64, Python 3.9.6 load
-generator): 10,000 validated help requests, 32 connections, 1.022 seconds,
-9,784 requests/second; p50 2.839 ms, p95 6.425 ms, p99 8.373 ms. This is a
-single local measurement, not a Node.js comparison or a production guarantee.
-Seven automated tests passed, including mock WebDriver success/failure cleanup;
-release HTTP checks covered help, uptime, missing credentials, invalid commands,
-URL-encoded forms, and graceful shutdown. Real USPS login was not exercised.
+Run the benchmark against a separately running release binary. It validates
+all help responses and reports throughput and latency. Compare the same workload
+on the same machine; historical Rust results do not establish Zig performance.
 
-
+The obsolete `Cargo.lock` is retained to preserve a pre-existing local edit.
+It is not used by the Zig build and can be removed when that edit is no longer
+needed.
